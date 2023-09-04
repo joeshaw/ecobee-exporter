@@ -3,6 +3,7 @@ package collector
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -26,7 +27,7 @@ type eCollector struct {
 	fetchTime *prometheus.Desc
 
 	// runtime descriptors
-	actualTemperature, targetTemperatureMin, targetTemperatureMax *prometheus.Desc
+	actualTemperature, targetTemperatureMin, targetTemperatureMax, currentFanMode, equipmentRunning *prometheus.Desc
 
 	// sensor descriptors
 	temperature, humidity, occupancy, inUse, currentHvacMode *prometheus.Desc
@@ -95,6 +96,16 @@ func NewEcobeeCollector(c *ecobee.Client, metricPrefix string) *eCollector {
 			"current hvac mode of thermostat",
 			[]string{"thermostat_id", "thermostat_name", "current_hvac_mode"},
 		),
+		currentFanMode: d.new(
+			"currentfanmode",
+			"current fan mode of thermostat",
+			[]string{"thermostat_id", "thermostat_name", "current_fan_mode"},
+		),
+		equipmentRunning: d.new(
+			"equipment_running",
+			"current equipment status (0 or 1)",
+			[]string{"thermostat_id", "thermostat_name", "equipment"},
+		),
 	}
 }
 
@@ -109,7 +120,11 @@ func (c *eCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.occupancy
 	ch <- c.inUse
 	ch <- c.currentHvacMode
+	ch <- c.currentFanMode
+	ch <- c.equipmentRunning
 }
+
+var Bool2Float = map[bool]float64{false: 0, true: 1}
 
 // Collect retrieves thermostat data via the ecobee API.
 func (c *eCollector) Collect(ch chan<- prometheus.Metric) {
@@ -127,6 +142,16 @@ func (c *eCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	for _, t := range tt {
+		// get equipment summary
+		ts, err := c.client.GetThermostatSummary((ecobee.Selection{
+			SelectionType:          "registered",
+			IncludeEquipmentStatus: true,
+		}))
+		if err != nil {
+			log.Error(err)
+			return
+		}
+
 		tFields := []string{t.Identifier, t.Name}
 		if t.Runtime.Connected {
 			ch <- prometheus.MustNewConstMetric(
@@ -141,15 +166,26 @@ func (c *eCollector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(
 				c.currentHvacMode, prometheus.GaugeValue, 0, t.Identifier, t.Name, t.Settings.HvacMode,
 			)
+			ch <- prometheus.MustNewConstMetric(
+				c.currentFanMode, prometheus.GaugeValue, 0, t.Identifier, t.Name, t.Runtime.DesiredFanMode,
+			)
+
+			// dynamically create a metric for each equipment status
+			r := reflect.ValueOf(ts[t.Identifier].EquipmentStatus)
+			equipFields := reflect.VisibleFields(reflect.TypeOf(struct{ ecobee.EquipmentStatus }{}))
+			for _, f := range equipFields {
+				fieldVal := reflect.Indirect(r).FieldByName(f.Name)
+				if fieldVal.IsValid() {
+					ch <- prometheus.MustNewConstMetric(
+						c.equipmentRunning, prometheus.GaugeValue, Bool2Float[fieldVal.Bool()], t.Identifier, t.Name, f.Name,
+					)
+				}
+			}
 		}
 		for _, s := range t.RemoteSensors {
 			sFields := append(tFields, s.ID, s.Name, s.Type)
-			inUse := float64(0)
-			if s.InUse {
-				inUse = 1
-			}
 			ch <- prometheus.MustNewConstMetric(
-				c.inUse, prometheus.GaugeValue, inUse, sFields...,
+				c.inUse, prometheus.GaugeValue, Bool2Float[s.InUse], sFields...,
 			)
 			for _, sc := range s.Capability {
 				switch sc.Type {
