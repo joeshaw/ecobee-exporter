@@ -218,8 +218,10 @@ func (c *eCollector) Collect(ch chan<- prometheus.Metric) {
 					default:
 						log.Errorf("unknown sensor occupancy value %q", sc.Value)
 					}
+				case "airPressure":
+					// ignore air pressure sensor, as mine always reports "unknown"
 				default:
-					log.Infof("ignoring sensor capability %q", sc.Type)
+					log.Infof("ignoring sensor capability %q value %q", sc.Type, sc.Value)
 				}
 			}
 		}

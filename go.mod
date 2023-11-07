@@ -1,4 +1,4 @@
-module github.com/billykwooten/ecobee-exporter
+module github.com/joeshaw/ecobee-exporter
 
 go 1.16
 
